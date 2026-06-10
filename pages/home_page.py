@@ -1,364 +1,235 @@
 """
-ui/pages/home_page.py — Dashboard Home Page
-KPI tiles, skill radar, performance chart, weak skills panel,
-AI suggestions, and recent activity timeline.
+pages/home_page.py
+Dashboard home page — KPI cards, recent activity, quick launch.
 """
-
-import math
-import tkinter as tk
-from datetime import datetime
-from typing import List, Dict, Callable
-
 import customtkinter as ctk
-import matplotlib
-matplotlib.use("TkAgg")
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.patches as mpatches
-import numpy as np
-
-from config import Colors, Fonts, Layout, MATPLOTLIB_STYLE
-from database import get_db
-from ui.components import (
-    GlassCard, MetricTile, CircularGauge,
-    NeonButton, Badge, ScrollableCardFrame, SectionHeader, Divider
-)
-from ui.theme import score_color
-
-# Apply matplotlib dark style
-for k, v in MATPLOTLIB_STYLE.items():
-    try:
-        plt.rcParams[k] = v
-    except Exception:
-        pass
+from config import Colors
+from ui.theme import make_card, make_label, make_neon_button, make_ghost_button
+from utils.helpers import relative_time, score_to_grade
 
 
 class HomePage(ctk.CTkFrame):
-    def __init__(self, master, navigate_cb: Callable, **kwargs):
-        super().__init__(master, fg_color="transparent", **kwargs)
-        self._navigate  = navigate_cb
-        self._db        = get_db()
-        self._stats     = {}
-        self.build()
-        self.refresh()
+    """Main dashboard overview page."""
 
-    # ─────────────────────────────────────────
-    def build(self):
-        # Main scrollable container
-        self._scroll = ScrollableCardFrame(self)
-        self._scroll.pack(fill="both", expand=True, padx=0, pady=0)
+    def __init__(self, parent, navigate_callback, db, **kwargs):
+        super().__init__(parent, fg_color="transparent", **kwargs)
+        self.navigate = navigate_callback
+        self.db       = db
+        self._build()
 
-        inner = self._scroll
-        pad = {"padx": 20, "pady": 0}
+    def _build(self):
+        # ── Header ────────────────────────────────────────────────────────────
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=32, pady=(28, 0))
 
-        # ── Header ──────────────────────────
-        hdr = SectionHeader(
-            inner,
-            title="Dashboard",
-            subtitle="Your career intelligence at a glance",
-            action_text="⟳  Refresh",
-            action_cmd=self.refresh,
+        ctk.CTkLabel(
+            header, text="Dashboard",
+            text_color = Colors.TEXT_PRIMARY,
+            font       = ("Segoe UI", 28, "bold"),
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            header, text="Welcome back · Track your progress",
+            text_color = Colors.TEXT_MUTED,
+            font       = ("Segoe UI", 12),
+        ).pack(side="left", padx=(16, 0), pady=(8, 0))
+
+        # ── KPI Cards row ─────────────────────────────────────────────────────
+        kpi_row = ctk.CTkFrame(self, fg_color="transparent")
+        kpi_row.pack(fill="x", padx=32, pady=(20, 0))
+
+        stats = self.db.get_session_stats()
+        total     = stats.get("total", 0)
+        avg_score = stats.get("avg_score") or 0.0
+        best      = stats.get("best_score") or 0.0
+        mins      = stats.get("total_time") or 0
+
+        resumes = self.db.get_resume_analyses(limit=1)
+        ats_score = resumes[0].get("ats_score", 0) if resumes else 0
+
+        kpi_data = [
+            ("Interviews", str(total),               Colors.NEON_CYAN,   "◉  Total Sessions"),
+            ("Avg Score",  f"{avg_score:.1f}/10",    Colors.NEON_PURPLE, "◎  Average Score"),
+            ("Best Score", f"{best:.1f}/10",          Colors.NEON_GREEN,  "◆  Personal Best"),
+            ("ATS Score",  f"{ats_score:.0f}%",       Colors.NEON_ORANGE, "◈  Last Resume"),
+        ]
+
+        for col, (title, value, color, subtitle) in enumerate(kpi_data):
+            kpi_row.columnconfigure(col, weight=1)
+            card = self._make_kpi_card(kpi_row, title, value, color, subtitle)
+            card.grid(row=0, column=col, padx=8, sticky="nsew")
+
+        # ── Content row ───────────────────────────────────────────────────────
+        content_row = ctk.CTkFrame(self, fg_color="transparent")
+        content_row.pack(fill="both", expand=True, padx=32, pady=20)
+        content_row.columnconfigure(0, weight=3)
+        content_row.columnconfigure(1, weight=2)
+        content_row.rowconfigure(0, weight=1)
+
+        # Left — recent sessions
+        self._build_recent_sessions(content_row)
+
+        # Right — quick actions + tips
+        self._build_quick_actions(content_row)
+
+    def _make_kpi_card(self, parent, title, value, color, subtitle):
+        card = make_card(parent, border_color=f"{color}33")
+        card.configure(height=120)
+        card.pack_propagate(False)
+
+        ctk.CTkLabel(
+            card, text=subtitle,
+            text_color = Colors.TEXT_MUTED,
+            font       = ("Segoe UI", 10),
+            anchor     = "w",
+        ).pack(anchor="w", padx=18, pady=(16, 2))
+
+        ctk.CTkLabel(
+            card, text=value,
+            text_color = color,
+            font       = ("Segoe UI", 28, "bold"),
+            anchor     = "w",
+        ).pack(anchor="w", padx=18, pady=0)
+
+        ctk.CTkLabel(
+            card, text=title,
+            text_color = Colors.TEXT_SECONDARY,
+            font       = ("Segoe UI", 11),
+            anchor     = "w",
+        ).pack(anchor="w", padx=18, pady=(2, 16))
+
+        # Coloured bottom accent
+        ctk.CTkFrame(card, height=3, fg_color=color, corner_radius=0).pack(
+            fill="x", side="bottom"
         )
-        hdr.pack(fill="x", **pad, pady=(20, 12))
+        return card
 
-        # ── Row 1: KPI Tiles ─────────────────
-        self._kpi_row = ctk.CTkFrame(inner, fg_color="transparent")
-        self._kpi_row.pack(fill="x", **pad, pady=(0, 16))
+    def _build_recent_sessions(self, parent):
+        card = make_card(parent)
+        card.grid(row=0, column=0, padx=(0, 10), sticky="nsew")
 
-        self._ats_tile  = MetricTile(self._kpi_row, "ATS Score", "—%",
-                                      subtitle="Resume compatibility",
-                                      icon="📄", accent=Colors.NEON_CYAN)
-        self._ready_tile = MetricTile(self._kpi_row, "Readiness", "—%",
-                                       subtitle="Overall job readiness",
-                                       icon="🎯", accent=Colors.NEON_PURPLE)
-        self._count_tile = MetricTile(self._kpi_row, "Interviews", "—",
-                                       subtitle="Completed sessions",
-                                       icon="🎙", accent=Colors.NEON_BLUE)
-        self._avg_tile   = MetricTile(self._kpi_row, "Avg Score", "—%",
-                                       subtitle="Interview performance",
-                                       icon="⭐", accent=Colors.NEON_GREEN)
+        hdr = ctk.CTkFrame(card, fg_color="transparent")
+        hdr.pack(fill="x", padx=20, pady=(18, 0))
+        ctk.CTkLabel(hdr, text="Recent Sessions",
+                     text_color=Colors.TEXT_PRIMARY,
+                     font=("Segoe UI", 14, "bold")).pack(side="left")
+        make_ghost_button(hdr, "View All",
+                          command=lambda: self.navigate("analytics"),
+                          color=Colors.NEON_CYAN, height=28,
+                          font=("Segoe UI", 11)).pack(side="right")
 
-        for col, tile in enumerate([self._ats_tile, self._ready_tile,
-                                     self._count_tile, self._avg_tile]):
-            self._kpi_row.columnconfigure(col, weight=1, uniform="kpi")
-            tile.grid(row=0, column=col, sticky="nsew", padx=6)
+        ctk.CTkFrame(card, height=1, fg_color=Colors.BORDER_DIM, corner_radius=0).pack(fill="x", padx=20, pady=8)
 
-        # ── Row 2: Charts ────────────────────
-        charts_row = ctk.CTkFrame(inner, fg_color="transparent")
-        charts_row.pack(fill="x", **pad, pady=(0, 16))
-        charts_row.columnconfigure(0, weight=4)
-        charts_row.columnconfigure(1, weight=3)
+        sessions = self.db.get_sessions(limit=6)
 
-        # Performance trend chart (left)
-        perf_card = GlassCard(charts_row, title="Performance Trend",
-                               accent=Colors.NEON_CYAN)
-        perf_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        self._perf_frame = perf_card.content_frame()
-        self._perf_frame.configure(height=220)
+        if not sessions:
+            empty = ctk.CTkFrame(card, fg_color="transparent")
+            empty.pack(fill="both", expand=True)
+            ctk.CTkLabel(
+                empty, text="◉  No sessions yet",
+                text_color = Colors.TEXT_MUTED,
+                font       = ("Segoe UI", 13),
+            ).pack(expand=True)
+            make_neon_button(
+                empty, "Start Your First Interview",
+                command = lambda: self.navigate("interview"),
+            ).pack(pady=(0, 24))
+            return
 
-        # Skill radar (right)
-        radar_card = GlassCard(charts_row, title="Skill Radar",
-                                accent=Colors.NEON_PURPLE)
-        radar_card.grid(row=0, column=1, sticky="nsew")
-        self._radar_frame = radar_card.content_frame()
-        self._radar_frame.configure(height=220)
+        for s in sessions:
+            self._make_session_row(card, s)
 
-        # ── Row 3: Weak Skills + AI Suggestions ─
-        row3 = ctk.CTkFrame(inner, fg_color="transparent")
-        row3.pack(fill="x", **pad, pady=(0, 16))
-        row3.columnconfigure(0, weight=1)
-        row3.columnconfigure(1, weight=1)
+    def _make_session_row(self, parent, session):
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=20, pady=3)
 
-        # Weak skills
-        weak_card = GlassCard(row3, title="Skill Gaps",
-                               accent=Colors.NEON_ORANGE)
-        weak_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        self._weak_inner = weak_card.content_frame()
+        # Domain badge
+        ctk.CTkLabel(
+            row, text=f"  {session.get('domain','?')[:12]}  ",
+            fg_color   = f"{Colors.NEON_PURPLE}22",
+            text_color = Colors.NEON_PURPLE,
+            corner_radius = 6,
+            font       = ("Segoe UI", 10, "bold"),
+        ).pack(side="left")
 
-        # AI suggestions
-        suggest_card = GlassCard(row3, title="AI Recommendations",
-                                  accent=Colors.NEON_PURPLE)
-        suggest_card.grid(row=0, column=1, sticky="nsew")
-        self._suggest_inner = suggest_card.content_frame()
+        # Mode
+        ctk.CTkLabel(
+            row, text=f"  {session.get('mode','')[:8]}  ",
+            fg_color   = f"{Colors.NEON_BLUE}22",
+            text_color = Colors.NEON_BLUE,
+            corner_radius = 6,
+            font       = ("Segoe UI", 10),
+        ).pack(side="left", padx=6)
 
-        # ── Row 4: Recent Activity ────────────
-        act_card = GlassCard(inner, title="Recent Activity",
-                              accent=Colors.NEON_BLUE)
-        act_card.pack(fill="x", **pad, pady=(0, 20))
-        self._activity_inner = act_card.content_frame()
+        # Time
+        ctk.CTkLabel(
+            row, text=relative_time(session.get("created_at", "")),
+            text_color = Colors.TEXT_MUTED,
+            font       = ("Segoe UI", 10),
+        ).pack(side="left", padx=4)
 
-    # ─────────────────────────────────────────
-    #  DATA REFRESH
-    # ─────────────────────────────────────────
+        # Score
+        score = session.get("score", 0) or 0
+        grade, col = score_to_grade(score)
+        ctk.CTkLabel(
+            row, text=f"{score:.1f}  {grade}",
+            text_color = col,
+            font       = ("Segoe UI", 12, "bold"),
+        ).pack(side="right")
+
+    def _build_quick_actions(self, parent):
+        card = make_card(parent)
+        card.grid(row=0, column=1, padx=(10, 0), sticky="nsew")
+
+        ctk.CTkLabel(card, text="Quick Actions",
+                     text_color=Colors.TEXT_PRIMARY,
+                     font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=20, pady=(18, 8))
+
+        ctk.CTkFrame(card, height=1, fg_color=Colors.BORDER_DIM, corner_radius=0).pack(fill="x", padx=20, pady=(0, 12))
+
+        actions = [
+            ("◉  Start Mock Interview",  Colors.NEON_CYAN,   "interview"),
+            ("◈  Analyze Resume",        Colors.NEON_PURPLE, "resume"),
+            ("◆  Generate Roadmap",      Colors.NEON_GREEN,  "roadmap"),
+            ("◎  View Analytics",        Colors.NEON_BLUE,   "analytics"),
+        ]
+
+        for label, color, page in actions:
+            ctk.CTkButton(
+                card, text=label,
+                command      = lambda p=page: self.navigate(p),
+                anchor       = "w",
+                fg_color     = f"{color}15",
+                hover_color  = f"{color}25",
+                text_color   = color,
+                border_width = 1,
+                border_color = f"{color}44",
+                corner_radius= 10,
+                font         = ("Segoe UI", 12, "bold"),
+                height       = 46,
+            ).pack(fill="x", padx=20, pady=4)
+
+        # Tips card
+        ctk.CTkLabel(card, text="💡  Pro Tips",
+                     text_color=Colors.TEXT_SECONDARY,
+                     font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=20, pady=(16, 4))
+
+        tips = [
+            "Upload your resume before interviews for targeted questions",
+            "Practice the same domain 3× to see score improvement",
+            "Review AI feedback carefully — it shows your weak spots",
+        ]
+        for tip in tips:
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=20, pady=2)
+            ctk.CTkLabel(row, text="·", text_color=Colors.NEON_CYAN,
+                         font=("Segoe UI", 14, "bold")).pack(side="left")
+            ctk.CTkLabel(row, text=f"  {tip}", text_color=Colors.TEXT_MUTED,
+                         font=("Segoe UI", 10), anchor="w",
+                         wraplength=220, justify="left").pack(side="left")
+
     def refresh(self):
-        self._stats = self._db.get_dashboard_stats()
-        self._update_kpis()
-        self._draw_perf_chart()
-        self._draw_radar()
-        self._update_weak_skills()
-        self._update_suggestions()
-        self._update_activity()
-
-    def _update_kpis(self):
-        s = self._stats
-        ats  = s.get("ats_score", 0)
-        rdy  = s.get("readiness_score", 0)
-        cnt  = s.get("interview_count", 0)
-        avg  = s.get("avg_score", 0)
-
-        self._ats_tile.update_value(f"{ats:.0f}%", score_color(ats))
-        self._ready_tile.update_value(f"{rdy:.0f}%", score_color(rdy))
-        self._count_tile.update_value(str(cnt))
-        self._avg_tile.update_value(f"{avg:.0f}%", score_color(avg))
-
-    def _draw_perf_chart(self):
-        for w in self._perf_frame.winfo_children():
+        """Reload all widgets from DB."""
+        for w in self.winfo_children():
             w.destroy()
-
-        fig, ax = plt.subplots(figsize=(6, 2.6), facecolor=Colors.BG_CARD)
-        ax.set_facecolor(Colors.BG_CARD)
-
-        trend = list(reversed(self._stats.get("score_trend", [])))
-        if trend:
-            scores = [r.get("avg_score", 0) for r in trend]
-            labels = [r.get("created_at", "")[:10] for r in trend]
-            x = range(len(scores))
-
-            # Gradient fill under line
-            ax.fill_between(x, scores, alpha=0.15, color=Colors.NEON_CYAN)
-            ax.plot(x, scores, color=Colors.NEON_CYAN, linewidth=2.5,
-                    marker="o", markersize=5, markerfacecolor=Colors.NEON_CYAN,
-                    markeredgecolor=Colors.BG_CARD)
-            ax.set_xticks(list(x))
-            ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
-            ax.set_ylim(0, 105)
-            ax.set_ylabel("Score %", color=Colors.TEXT_SECONDARY, fontsize=9)
-        else:
-            ax.text(0.5, 0.5, "No interview data yet\nComplete an interview to see trends",
-                    ha="center", va="center", color=Colors.TEXT_MUTED,
-                    fontsize=10, transform=ax.transAxes)
-            ax.set_xticks([])
-
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_color(Colors.BORDER_DIM)
-        ax.spines["bottom"].set_color(Colors.BORDER_DIM)
-        fig.tight_layout(pad=0.8)
-
-        canvas = FigureCanvasTkAgg(fig, master=self._perf_frame)
-        canvas.get_tk_widget().configure(bg=Colors.BG_CARD,
-                                          highlightthickness=0)
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-        canvas.draw()
-        plt.close(fig)
-
-    def _draw_radar(self):
-        for w in self._radar_frame.winfo_children():
-            w.destroy()
-
-        skills_found = self._stats.get("skills_found", [])
-        # Build radar from found skills (up to 6)
-        categories = skills_found[:6] if skills_found else [
-            "Python", "SQL", "System Design", "Communication",
-            "Algorithms", "Cloud"
-        ]
-        values = [70, 55, 45, 80, 60, 50][:len(categories)]
-        # Pad if needed
-        while len(values) < len(categories):
-            values.append(50)
-
-        N = len(categories)
-        angles = [n / N * 2 * math.pi for n in range(N)]
-        angles += angles[:1]
-        vals = values + values[:1]
-
-        fig, ax = plt.subplots(figsize=(3.2, 2.6),
-                                subplot_kw=dict(polar=True),
-                                facecolor=Colors.BG_CARD)
-        ax.set_facecolor(Colors.BG_CARD)
-
-        ax.plot(angles, vals, color=Colors.NEON_PURPLE, linewidth=2)
-        ax.fill(angles, vals, color=Colors.NEON_PURPLE, alpha=0.2)
-        ax.set_xticks(angles[:-1])
-        ax.set_xticklabels(
-            [c[:8] for c in categories],
-            color=Colors.TEXT_SECONDARY, size=8
-        )
-        ax.set_ylim(0, 100)
-        ax.set_yticks([25, 50, 75, 100])
-        ax.set_yticklabels(["25", "50", "75", "100"],
-                            color=Colors.TEXT_MUTED, size=7)
-        ax.grid(color=Colors.BORDER_DIM, linestyle="--", alpha=0.5)
-        ax.spines["polar"].set_color(Colors.BORDER_DIM)
-        fig.tight_layout(pad=0.5)
-
-        canvas = FigureCanvasTkAgg(fig, master=self._radar_frame)
-        canvas.get_tk_widget().configure(bg=Colors.BG_CARD,
-                                          highlightthickness=0)
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-        canvas.draw()
-        plt.close(fig)
-
-    def _update_weak_skills(self):
-        for w in self._weak_inner.winfo_children():
-            w.destroy()
-
-        weak = self._stats.get("skills_found", [])
-        # Simulate proficiency — real data from analytics
-        sample_weak = [
-            ("System Design", 35), ("Algorithms", 42),
-            ("Docker / K8s", 48), ("Cloud Arch.", 55),
-        ] if not weak else [(s, 60) for s in weak[:4]]
-
-        if not sample_weak:
-            ctk.CTkLabel(self._weak_inner,
-                         text="Upload your resume to detect skill gaps",
-                         font=ctk.CTkFont(*Fonts.BODY),
-                         text_color=Colors.TEXT_MUTED).pack()
-            return
-
-        for skill, pct in sample_weak:
-            row = ctk.CTkFrame(self._weak_inner, fg_color="transparent")
-            row.pack(fill="x", pady=3)
-
-            ctk.CTkLabel(row, text=skill,
-                         font=ctk.CTkFont(*Fonts.LABEL),
-                         text_color=Colors.TEXT_PRIMARY,
-                         width=120, anchor="w").pack(side="left")
-
-            track = ctk.CTkFrame(row, fg_color=Colors.BORDER_DIM,
-                                  corner_radius=4, height=6)
-            track.pack(side="left", fill="x", expand=True, padx=8)
-            col = score_color(pct)
-            ctk.CTkFrame(track, fg_color=col,
-                          corner_radius=4, height=6).place(
-                relwidth=pct/100, relheight=1
-            )
-
-            ctk.CTkLabel(row, text=f"{pct}%",
-                         font=ctk.CTkFont(*Fonts.CAPTION),
-                         text_color=score_color(pct),
-                         width=32).pack(side="right")
-
-        NeonButton(self._weak_inner, text="Build Roadmap →",
-                   command=lambda: self._navigate("roadmap"),
-                   variant="outline", accent=Colors.NEON_ORANGE
-                   ).pack(pady=(10, 0), anchor="w")
-
-    def _update_suggestions(self):
-        for w in self._suggest_inner.winfo_children():
-            w.destroy()
-
-        suggestions = [
-            ("📄", "Add quantified achievements to resume",    Colors.NEON_CYAN),
-            ("🎙", "Practice 2 mock interviews this week",     Colors.NEON_PURPLE),
-            ("📚", "Study System Design fundamentals",          Colors.NEON_ORANGE),
-            ("🔗", "Update LinkedIn with latest projects",      Colors.NEON_GREEN),
-        ]
-
-        for icon, text, col in suggestions:
-            row = ctk.CTkFrame(self._suggest_inner,
-                               fg_color=Colors.BG_CARD_HOVER,
-                               corner_radius=8)
-            row.pack(fill="x", pady=3)
-
-            ctk.CTkLabel(row, text=icon,
-                         font=ctk.CTkFont(size=14),
-                         width=28).pack(side="left", padx=(10, 6), pady=8)
-            ctk.CTkLabel(row, text=text,
-                         font=ctk.CTkFont(*Fonts.LABEL),
-                         text_color=Colors.TEXT_PRIMARY,
-                         wraplength=260, anchor="w",
-                         justify="left").pack(side="left",
-                                              fill="x", expand=True,
-                                              padx=(0, 10), pady=8)
-
-    def _update_activity(self):
-        for w in self._activity_inner.winfo_children():
-            w.destroy()
-
-        interviews = self._db.get_recent_interviews(limit=5)
-        resume     = self._db.get_latest_resume()
-
-        activities = []
-        if resume:
-            activities.append({
-                "icon":  "📄",
-                "title": f"Resume analyzed — ATS: {resume['ats_score']:.0f}%",
-                "time":  resume["created_at"][:16],
-                "color": Colors.NEON_CYAN,
-            })
-        for iv in interviews[:4]:
-            activities.append({
-                "icon":  "🎙",
-                "title": f"{iv['mode']} interview — Score: {iv['avg_score']:.0f}%  ({iv['domain']})",
-                "time":  iv["created_at"][:16],
-                "color": Colors.NEON_PURPLE,
-            })
-
-        if not activities:
-            ctk.CTkLabel(self._activity_inner,
-                         text="No activity yet. Upload a resume or start an interview!",
-                         font=ctk.CTkFont(*Fonts.BODY),
-                         text_color=Colors.TEXT_MUTED).pack(pady=20)
-            return
-
-        for i, act in enumerate(activities):
-            row = ctk.CTkFrame(self._activity_inner, fg_color="transparent")
-            row.pack(fill="x", pady=2)
-
-            # Timeline dot + line
-            tl = tk.Canvas(row, width=20, height=36,
-                            bg=Colors.BG_CARD, highlightthickness=0)
-            tl.pack(side="left", padx=(0, 10))
-            tl.create_oval(6, 10, 14, 18, fill=act["color"], outline="")
-            if i < len(activities) - 1:
-                tl.create_line(10, 18, 10, 36, fill=Colors.BORDER_DIM, width=1)
-
-            ctk.CTkLabel(row, text=f"{act['icon']}  {act['title']}",
-                         font=ctk.CTkFont(*Fonts.LABEL),
-                         text_color=Colors.TEXT_PRIMARY,
-                         anchor="w").pack(side="left", fill="x", expand=True)
-            ctk.CTkLabel(row, text=act["time"],
-                         font=ctk.CTkFont(*Fonts.CAPTION),
-                         text_color=Colors.TEXT_MUTED).pack(side="right")
+        self._build()

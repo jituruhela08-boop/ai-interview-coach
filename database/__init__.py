@@ -1,2 +1,4 @@
-from .db_manager import DatabaseManager, get_db
-__all__ = ["DatabaseManager", "get_db"]
+# database/__init__.py
+from .db_manager import DatabaseManager
+
+db = DatabaseManager()

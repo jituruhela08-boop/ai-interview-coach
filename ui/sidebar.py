@@ -1,230 +1,161 @@
 """
-ui/sidebar.py — Premium Animated Sidebar Navigation
-Glassmorphism sidebar with icon+label nav items, active glow state,
-and collapsible sections.
+ui/sidebar.py
+Premium dark glassmorphism sidebar navigation for AI Interview Coach.
 """
-
-import tkinter as tk
-from typing import Callable, Dict, List, Optional
-
 import customtkinter as ctk
-
-from config import Colors, Fonts, Layout
-
-
-# ─────────────────────────────────────────────
-#  NAV ITEM  (single sidebar entry)
-# ─────────────────────────────────────────────
-class SidebarItem(ctk.CTkFrame):
-    def __init__(self, master, icon: str, label: str,
-                 page_key: str, on_click: Callable, **kwargs):
-        super().__init__(master,
-                          fg_color="transparent",
-                          corner_radius=10,
-                          cursor="hand2",
-                          **kwargs)
-        self.page_key  = page_key
-        self.on_click  = on_click
-        self._active   = False
-
-        self._icon_lbl = ctk.CTkLabel(
-            self, text=icon,
-            font=ctk.CTkFont(size=18),
-            text_color=Colors.TEXT_MUTED,
-            width=30,
-        )
-        self._icon_lbl.pack(side="left", padx=(12, 0), pady=10)
-
-        self._text_lbl = ctk.CTkLabel(
-            self, text=label,
-            font=ctk.CTkFont(*Fonts.NAV_ITEM),
-            text_color=Colors.TEXT_SECONDARY,
-            anchor="w",
-        )
-        self._text_lbl.pack(side="left", padx=10, fill="x", expand=True)
-
-        # Active indicator strip (left edge)
-        self._indicator = tk.Frame(self, width=3,
-                                    bg=Colors.BG_SECONDARY)
-        self._indicator.place(relx=0, rely=0, relheight=1, width=3)
-
-        # Bind click on all children
-        for w in [self, self._icon_lbl, self._text_lbl]:
-            w.bind("<Button-1>", self._handle_click)
-            w.bind("<Enter>",    self._on_enter)
-            w.bind("<Leave>",    self._on_leave)
-
-    def set_active(self, active: bool):
-        self._active = active
-        if active:
-            self.configure(fg_color=Colors.SIDEBAR_ACTIVE)
-            self._icon_lbl.configure(text_color=Colors.NEON_CYAN)
-            self._text_lbl.configure(
-                text_color=Colors.TEXT_PRIMARY,
-                font=ctk.CTkFont(*Fonts.NAV_ITEM_ACTIVE)
-            )
-            self._indicator.configure(bg=Colors.NEON_CYAN)
-        else:
-            self.configure(fg_color="transparent")
-            self._icon_lbl.configure(text_color=Colors.TEXT_MUTED)
-            self._text_lbl.configure(
-                text_color=Colors.TEXT_SECONDARY,
-                font=ctk.CTkFont(*Fonts.NAV_ITEM)
-            )
-            self._indicator.configure(bg=Colors.BG_SECONDARY)
-
-    def _on_enter(self, _):
-        if not self._active:
-            self.configure(fg_color=Colors.SIDEBAR_HOVER)
-
-    def _on_leave(self, _):
-        if not self._active:
-            self.configure(fg_color="transparent")
-
-    def _handle_click(self, _):
-        self.on_click(self.page_key)
-
-
-# ─────────────────────────────────────────────
-#  SIDEBAR
-# ─────────────────────────────────────────────
-NAV_ITEMS: List[Dict] = [
-    {"icon": "⌂",  "label": "Dashboard",       "key": "home"},
-    {"icon": "📄",  "label": "Resume Analyzer",  "key": "resume"},
-    {"icon": "🎙",  "label": "AI Interview",     "key": "interview"},
-    {"icon": "🗺",  "label": "Learning Roadmap", "key": "roadmap"},
-    {"icon": "📊",  "label": "Analytics",        "key": "analytics"},
-    {"icon": "📋",  "label": "Reports",          "key": "reports"},
-    {"icon": "⚙",  "label": "Settings",         "key": "settings"},
-]
+from config import Colors, Layout, APP_NAME, APP_VERSION
 
 
 class Sidebar(ctk.CTkFrame):
     """
-    Full-height sidebar with logo, nav items, and bottom user card.
+    Fixed-width sidebar with neon icon buttons and active state highlighting.
+    Calls navigate_callback(page_name) when a nav item is clicked.
     """
-    def __init__(self, master, navigate_callback: Callable,
-                 user_name: str = "User", **kwargs):
+
+    NAV_ITEMS = [
+        ("home",      "⌂",  "Dashboard"),
+        ("resume",    "◈",  "Resume Analyzer"),
+        ("interview", "◉",  "Mock Interview"),
+        ("analytics", "◎",  "Analytics"),
+        ("roadmap",   "◆",  "Roadmap"),
+        ("settings",  "⚙",  "Settings"),
+    ]
+
+    def __init__(self, parent, navigate_callback, **kwargs):
         super().__init__(
-            master,
-            width=Layout.SIDEBAR_WIDTH,
-            fg_color=Colors.SIDEBAR_BG,
-            corner_radius=0,
+            parent,
+            width         = Layout.SIDEBAR_WIDTH,
+            fg_color      = Colors.SIDEBAR_BG,
+            corner_radius = 0,
+            border_width  = 0,
             **kwargs
         )
+        self.navigate_callback = navigate_callback
+        self.active_page       = "home"
+        self._buttons          = {}
+
         self.pack_propagate(False)
-        self._navigate = navigate_callback
-        self._items: Dict[str, SidebarItem] = {}
-        self._active_key: Optional[str] = None
+        self._build()
 
-        self._build_logo()
-        self._build_nav()
-        self._build_user_card(user_name)
-
-    # ─────────────────────────────────────────
-    def _build_logo(self):
-        logo_frame = ctk.CTkFrame(self, fg_color="transparent", height=80)
-        logo_frame.pack(fill="x", pady=(10, 0))
+    # ── build ─────────────────────────────────────────────────────────────────
+    def _build(self):
+        # Logo / brand area
+        logo_frame = ctk.CTkFrame(self, fg_color="transparent", height=72)
+        logo_frame.pack(fill="x", padx=0, pady=0)
         logo_frame.pack_propagate(False)
 
-        # Gradient canvas for logo area
-        canvas = tk.Canvas(logo_frame, width=Layout.SIDEBAR_WIDTH, height=80,
-                            bg=Colors.SIDEBAR_BG, highlightthickness=0)
-        canvas.pack(fill="both", expand=True)
-
-        # Glow circle behind icon
-        canvas.create_oval(18, 18, 54, 54,
-                            fill=f"{Colors.NEON_CYAN}18", outline=Colors.NEON_CYAN,
-                            width=1)
-        canvas.create_text(36, 36, text="🤖", font=("Arial", 16))
+        # Glowing accent line at top
+        top_accent = ctk.CTkFrame(self, height=2, fg_color=Colors.NEON_CYAN, corner_radius=0)
+        top_accent.pack(fill="x")
 
         # App name
-        canvas.create_text(
-            70, 26, anchor="w",
-            text="AI Interview",
-            font=(Fonts.FAMILY_PRIMARY, 13, Fonts.BOLD),
-            fill=Colors.TEXT_PRIMARY
-        )
-        canvas.create_text(
-            70, 46, anchor="w",
-            text="Coach",
-            font=(Fonts.FAMILY_PRIMARY, 11, Fonts.NORMAL),
-            fill=Colors.NEON_CYAN
-        )
+        brand_frame = ctk.CTkFrame(self, fg_color="transparent")
+        brand_frame.pack(fill="x", padx=16, pady=(16, 8))
 
-        # Separator line with gradient
-        sep = ctk.CTkFrame(self, height=1, fg_color=Colors.BORDER_DIM)
-        sep.pack(fill="x", padx=16, pady=(4, 0))
-
-    def _build_nav(self):
-        nav_frame = ctk.CTkFrame(self, fg_color="transparent")
-        nav_frame.pack(fill="both", expand=True, padx=8, pady=8)
-
-        # Nav label
         ctk.CTkLabel(
-            nav_frame, text="NAVIGATION",
-            font=ctk.CTkFont(*Fonts.CAPTION),
-            text_color=Colors.TEXT_MUTED,
-        ).pack(anchor="w", padx=12, pady=(8, 4))
-
-        for item_def in NAV_ITEMS:
-            item = SidebarItem(
-                nav_frame,
-                icon=item_def["icon"],
-                label=item_def["label"],
-                page_key=item_def["key"],
-                on_click=self._on_item_click,
-            )
-            item.pack(fill="x", pady=2)
-            self._items[item_def["key"]] = item
-
-    def _build_user_card(self, user_name: str):
-        sep = ctk.CTkFrame(self, height=1, fg_color=Colors.BORDER_DIM)
-        sep.pack(fill="x", padx=16)
-
-        card = ctk.CTkFrame(self, fg_color="transparent", height=70)
-        card.pack(fill="x", padx=12, pady=10)
-        card.pack_propagate(False)
-
-        # Avatar circle
-        av_canvas = tk.Canvas(card, width=38, height=38,
-                               bg=Colors.SIDEBAR_BG, highlightthickness=0)
-        av_canvas.pack(side="left", padx=(4, 10), pady=6)
-        av_canvas.create_oval(2, 2, 36, 36,
-                               fill=Colors.NEON_PURPLE + "40",
-                               outline=Colors.NEON_PURPLE, width=1)
-        av_canvas.create_text(20, 20, text=user_name[0].upper(),
-                               font=(Fonts.FAMILY_PRIMARY, 14, Fonts.BOLD),
-                               fill=Colors.NEON_PURPLE)
-
-        info = ctk.CTkFrame(card, fg_color="transparent")
-        info.pack(side="left", fill="y", pady=6)
-        self._name_label = ctk.CTkLabel(
-            info, text=user_name,
-            font=ctk.CTkFont(*Fonts.BODY_BOLD),
-            text_color=Colors.TEXT_PRIMARY, anchor="w",
-        )
-        self._name_label.pack(anchor="w")
-        ctk.CTkLabel(
-            info, text="Premium Member",
-            font=ctk.CTkFont(*Fonts.CAPTION),
-            text_color=Colors.NEON_CYAN, anchor="w",
+            brand_frame,
+            text       = "◈ AI Coach",
+            text_color = Colors.NEON_CYAN,
+            font       = ("Segoe UI", 15, "bold"),
+            anchor     = "w",
         ).pack(anchor="w")
 
-    # ─────────────────────────────────────────
-    def _on_item_click(self, key: str):
-        if self._active_key:
-            self._items[self._active_key].set_active(False)
-        self._active_key = key
-        self._items[key].set_active(True)
-        self._navigate(key)
+        ctk.CTkLabel(
+            brand_frame,
+            text       = f"v{APP_VERSION} · Gemini AI",
+            text_color = Colors.TEXT_MUTED,
+            font       = ("Segoe UI", 10, "normal"),
+            anchor     = "w",
+        ).pack(anchor="w")
 
-    def set_active(self, key: str):
-        if self._active_key and self._active_key in self._items:
-            self._items[self._active_key].set_active(False)
-        self._active_key = key
-        if key in self._items:
-            self._items[key].set_active(True)
+        # Separator
+        ctk.CTkFrame(self, height=1, fg_color=Colors.BORDER_DIM, corner_radius=0).pack(fill="x")
 
-    def update_user_name(self, name: str):
-        self._name_label.configure(text=name)
+        # Section label
+        ctk.CTkLabel(
+            self,
+            text       = "  NAVIGATION",
+            text_color = Colors.TEXT_MUTED,
+            font       = ("Segoe UI", 9, "bold"),
+            anchor     = "w",
+        ).pack(fill="x", padx=16, pady=(16, 4))
+
+        # Nav items
+        nav_frame = ctk.CTkFrame(self, fg_color="transparent")
+        nav_frame.pack(fill="x", padx=8, pady=0)
+
+        for page, icon, label in self.NAV_ITEMS:
+            btn = self._make_nav_button(nav_frame, page, icon, label)
+            btn.pack(fill="x", pady=2)
+            self._buttons[page] = btn
+
+        # Spacer
+        ctk.CTkFrame(self, fg_color="transparent").pack(fill="both", expand=True)
+
+        # Bottom: status indicator
+        ctk.CTkFrame(self, height=1, fg_color=Colors.BORDER_DIM, corner_radius=0).pack(fill="x")
+        status_frame = ctk.CTkFrame(self, fg_color="transparent")
+        status_frame.pack(fill="x", padx=16, pady=12)
+
+        self.status_dot = ctk.CTkLabel(
+            status_frame, text="●",
+            text_color = Colors.NEON_GREEN,
+            font       = ("Segoe UI", 10),
+        )
+        self.status_dot.pack(side="left")
+
+        self.status_label = ctk.CTkLabel(
+            status_frame, text=" Ready",
+            text_color = Colors.TEXT_MUTED,
+            font       = ("Segoe UI", 10),
+        )
+        self.status_label.pack(side="left")
+
+        # Set initial active state
+        self.set_active("home")
+
+    def _make_nav_button(self, parent, page: str, icon: str, label: str) -> ctk.CTkButton:
+        return ctk.CTkButton(
+            parent,
+            text          = f"  {icon}   {label}",
+            command       = lambda p=page: self._on_nav_click(p),
+            anchor        = "w",
+            fg_color      = "transparent",
+            hover_color   = Colors.SIDEBAR_HOVER,
+            text_color    = Colors.TEXT_SECONDARY,
+            corner_radius = 10,
+            font          = ("Segoe UI", 13, "normal"),
+            height        = 44,
+            border_width  = 0,
+        )
+
+    # ── public API ────────────────────────────────────────────────────────────
+    def set_active(self, page: str):
+        """Highlight the active nav item."""
+        for p, btn in self._buttons.items():
+            if p == page:
+                btn.configure(
+                    fg_color   = Colors.SIDEBAR_ACTIVE,
+                    text_color = Colors.NEON_CYAN,
+                    font       = ("Segoe UI", 13, "bold"),
+                    border_width  = 1,
+                    border_color  = Colors.BORDER_DIM,
+                )
+            else:
+                btn.configure(
+                    fg_color     = "transparent",
+                    text_color   = Colors.TEXT_SECONDARY,
+                    font         = ("Segoe UI", 13, "normal"),
+                    border_width = 0,
+                )
+        self.active_page = page
+
+    def set_status(self, text: str, color: str = Colors.NEON_GREEN):
+        """Update the bottom status indicator."""
+        self.status_dot.configure(text_color=color)
+        self.status_label.configure(text=f" {text}")
+
+    # ── private ───────────────────────────────────────────────────────────────
+    def _on_nav_click(self, page: str):
+        self.set_active(page)
+        self.navigate_callback(page)
